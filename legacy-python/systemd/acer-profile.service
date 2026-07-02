@@ -1,0 +1,14 @@
+[Unit]
+Description=Acer Swift SFG14-73 performance profile controller
+After=multi-user.target
+# power-profiles-daemon je zakázán (rozbitý na tomto stroji - EBUSY).
+# acer-profile ho plně nahrazuje (RAPL + EPP + governor + GPU).
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/acer-profiled
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+[project]
+name = "acer-profile"
+version = "0.1.0"
+description = "Acer Swift SFG14-73 performance profile controller (RAPL + EPP + i915 GPU)"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "dn" }]
+
+[project.scripts]
+acer-profile = "acer_profile.cli:main"
+acer-profiled = "acer_profile.daemon:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]

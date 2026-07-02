@@ -1,0 +1,27 @@
+[package]
+name = "acer-profile"
+version = "0.2.0"
+edition = "2021"
+description = "Acer Swift SFG14-73 performance profile controller (RAPL + EPP + i915 GPU) + DBus PPD replacement"
+license = "MIT"
+
+[[bin]]
+name = "acer-profile"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+zbus = { version = "4", default-features = false, features = ["async-io"] }
+async-io = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

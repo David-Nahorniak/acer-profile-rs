@@ -1,0 +1,15 @@
+[Unit]
+Description=Acer Swift SFG14-73 performance profile controller (Rust) + DBus PPD replacement
+After=multi-user.target
+# power-profiles-daemon je masknutý (rozbitý EBUSY na tomto stroji).
+# acer-profile ho na DBus plně nahrazuje (RAPL + EPP + governor + i915 GPU)
+# a vlastní net.hadess.PowerProfiles na system bus pro Plasma slider.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/acer-profile daemon
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

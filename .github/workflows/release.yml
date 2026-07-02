@@ -1,0 +1,262 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # -------------------------------------------------------------------
+  # Matrix build: x86_64-unknown-linux-gnu + x86_64-unknown-linux-musl
+  # Každý target buildí release binár a zabalí ho do tarballu se
+  # strukturou install tree (usr/bin, etc/acer-profile, systemd unit) +
+  # README.md + install.sh vedle tree.
+  # -------------------------------------------------------------------
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # musl statický build vyžaduje musl-tools (linker) na ubuntu runneru.
+      - name: Install musl-tools (musl target only)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update -y && sudo apt-get install -y musl-tools
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            v="${GITHUB_REF#refs/tags/v}"
+          else
+            v="0.0.0-ci.${GITHUB_SHA::7}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Stage install tree
+        run: |
+          set -eu
+          TARGET="${{ matrix.target }}"
+          VER="${{ steps.ver.outputs.version }}"
+          STAGE="stage-${TARGET}"
+          mkdir -p "$STAGE/pkg/usr/bin" \
+                   "$STAGE/pkg/etc/acer-profile" \
+                   "$STAGE/pkg/usr/lib/systemd/system" \
+                   "$STAGE/pkg/var/lib/acer-profile"
+          cp "target/${TARGET}/release/acer-profile" "$STAGE/pkg/usr/bin/acer-profile"
+          cp config/profiles.toml      "$STAGE/pkg/etc/acer-profile/profiles.toml"
+          cp systemd/acer-profile.service \
+             "$STAGE/pkg/usr/lib/systemd/system/acer-profile.service"
+          # README + install.sh vedle tree pro ruční instalaci z tarballu.
+          cp README.md    "$STAGE/README.md"
+          cp install.sh   "$STAGE/install.sh"
+          cp LICENSE      "$STAGE/LICENSE"
+          chmod 0755 "$STAGE/install.sh"
+
+          ARCHIVE="acer-profile-${VER}-${TARGET}.tar.gz"
+          tar -czf "$ARCHIVE" -C "$STAGE" .
+          echo "archive=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.archive }}
+          path: ${{ env.archive }}
+          if-no-files-found: error
+          retention-days: 14
+
+  # -------------------------------------------------------------------
+  # .deb + .rpm z gnu buildu (nativní distro balíčky).
+  # Stáhne gnu tarball, rozbalí, fpm zabalí install tree.
+  # -------------------------------------------------------------------
+  distro-packages:
+    name: .deb + .rpm (gnu)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            v="${GITHUB_REF#refs/tags/v}"
+          else
+            v="0.0.0-ci.${GITHUB_SHA::7}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Install fpm
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ruby ruby-dev build-essential
+          sudo gem install fpm --no-document
+
+      - name: Download gnu tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: acer-profile-${{ steps.ver.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz
+          path: dl
+
+      - name: Unpack install tree
+        run: |
+          mkdir -p pkg
+          tar -xzf dl/acer-profile-${{ steps.ver.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz \
+              -C pkg
+          # pkg/pkg/usr/bin/... -> pkg/usr/bin/...
+          if [ -d pkg/pkg ]; then
+            mv pkg/pkg/* pkg/
+            rmdir pkg/pkg
+          fi
+          find pkg -maxdepth 3 -type d | sort
+
+      - name: fpm .deb
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          fpm -s dir -t deb \
+            -n acer-profile -v "$VER" \
+            --iteration 1 \
+            --license MIT \
+            --url "https://github.com/David-Nahorniak/acer-profile-rs" \
+            --description "Acer Swift SFG14-73 performance profile controller (RAPL+EPP+i915 GPU) + DBus power-profiles-daemon replacement" \
+            --depends "systemd | systemd-sysv" \
+            --depends stress-ng \
+            --depends lm-sensors \
+            -p "acer-profile_${VER}_amd64.deb" \
+            -C pkg \
+            usr/bin etc/acer-profile usr/lib/systemd/system var/lib/acer-profile
+
+      - name: fpm .rpm
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          fpm -s dir -t rpm \
+            -n acer-profile -v "$VER" \
+            --iteration 1 \
+            --license MIT \
+            --url "https://github.com/David-Nahorniak/acer-profile-rs" \
+            --description "Acer Swift SFG14-73 performance profile controller (RAPL+EPP+i915 GPU) + DBus power-profiles-daemon replacement" \
+            --depends systemd \
+            --depends stress-ng \
+            --depends lm_sensors \
+            -p "acer-profile-${VER}-1.x86_64.rpm" \
+            -C pkg \
+            usr/bin etc/acer-profile usr/lib/systemd/system var/lib/acer-profile
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: acer-profile_${{ steps.ver.outputs.version }}_amd64.deb
+          path: acer-profile_${{ steps.ver.outputs.version }}_amd64.deb
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload rpm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: acer-profile-${{ steps.ver.outputs.version }}-1.x86_64.rpm
+          path: acer-profile-${{ steps.ver.outputs.version }}-1.x86_64.rpm
+          if-no-files-found: error
+          retention-days: 14
+
+  # -------------------------------------------------------------------
+  # Release: sbalí všechny artefakty do GH Release.
+  #   - tag v*            -> stabilní release (make_latest true)
+  #   - push main / dispatch -> rolling prerelease pod tagem "continuous"
+  # -------------------------------------------------------------------
+  release:
+    name: publish release
+    needs: [build, distro-packages]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version + release mode
+        id: rel
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "make_latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=continuous" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "make_latest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine version (for artifact names)
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            v="${GITHUB_REF#refs/tags/v}"
+          else
+            v="0.0.0-ci.${GITHUB_SHA::7}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.deb' -o -name '*.rpm' \) \
+            -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Create/update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.rel.outputs.tag }}
+          name: ${{ steps.rel.outputs.tag == 'continuous' && 'Continuous build' || format('v{0}', steps.ver.outputs.version) }}
+          prerelease: ${{ steps.rel.outputs.prerelease }}
+          make_latest: ${{ steps.rel.outputs.make_latest }}
+          body: |
+            ## acer-profile ${{ steps.ver.outputs.version }}
+
+            ### Artefakty
+            - `acer-profile-*-x86_64-unknown-linux-gnu.tar.gz` — glibc build (nativní pro běžné distribuce)
+            - `acer-profile-*-x86_64-unknown-linux-musl.tar.gz` — plně statický portable binár (bez glibc závislosti)
+            - `acer-profile_*_amd64.deb` — Debian/Ubuntu balíček (z gnu buildu)
+            - `acer-profile-*-1.x86_64.rpm` — Fedora/RHEL balíček (z gnu buildu)
+
+            ### Instalace z tarballu
+            ```bash
+            tar -xzf acer-profile-*-x86_64-unknown-linux-musl.tar.gz
+            sudo ./install.sh
+            ```
+            ### Instalace z .deb / .rpm
+            ```bash
+            sudo apt install ./acer-profile_*_amd64.deb
+            # nebo
+            sudo dnf install ./acer-profile-*-1.x86_64.rpm
+            ```
+          files: |
+            release/*.tar.gz
+            release/*.deb
+            release/*.rpm

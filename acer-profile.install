@@ -1,0 +1,29 @@
+## Post-install/postrm hooky pro acer-profile-git (AUR).
+## Instalace bináre je v package(); zde jen systemd+PPD konfigurace.
+
+post_install() {
+  echo ":: acer-profile: zakazuji/maskuji power-profiles-daemon (DBus kolize)"
+  if systemctl list-unit-files 2>/dev/null | grep -q 'power-profiles-daemon'; then
+    systemctl disable --now power-profiles-daemon 2>/dev/null || true
+    systemctl mask power-profiles-daemon
+  fi
+  systemctl daemon-reload
+  systemctl enable acer-profile.service
+  echo ":: acer-profile nainstalován. Spusť: sudo systemctl start acer-profile"
+  echo "   PPD reverzibilita: systemctl unmask power-profiles-daemon"
+}
+
+post_upgrade() {
+  systemctl daemon-reload
+  systemctl restart acer-profile.service 2>/dev/null || true
+}
+
+pre_remove() {
+  systemctl disable --now acer-profile.service 2>/dev/null || true
+}
+
+post_remove() {
+  echo ":: acer-profile odstraněn. Pro návrat k PPD:"
+  echo "   sudo systemctl unmask power-profiles-daemon && sudo systemctl enable --now power-profiles-daemon"
+  echo "   State: /var/lib/acer-profile a config /etc/acer-profile zůstaly (smaž ručně)."
+}

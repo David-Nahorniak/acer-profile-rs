@@ -1,0 +1,31 @@
+# acer-profile konfigurace profilů (TOML).
+# Hodnoty kalibrovány měřením na Acer Swift SFG14-73 / Intel Core Ultra 9 185H.
+# Plné zdůvodnění a popis testů: viz docs/PROFILY-TESTOVANI.md
+#
+# Klíčové (z probe-pl2.sh):
+#   PBP=45W (Intel spec), PL2 strop=64W (5089MHz@83°C), 80W→98°C throttle.
+# Po úpravě: sudo systemctl restart acer-profile
+
+[eco]
+pl1_uw = 20000000
+pl2_uw = 25000000
+epp = "power"
+governor = "powersave"
+gpu_max_mhz = 800
+gpu_boost_mhz = 800
+
+[normal]
+pl1_uw = 35000000
+pl2_uw = 45000000
+epp = "balance_power"
+governor = "powersave"
+gpu_max_mhz = 1600
+gpu_boost_mhz = 1600
+
+[performance]
+pl1_uw = 45000000
+pl2_uw = 64000000
+epp = "performance"
+governor = "performance"
+gpu_max_mhz = 2350
+gpu_boost_mhz = 2350
