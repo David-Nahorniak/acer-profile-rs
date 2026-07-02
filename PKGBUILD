@@ -11,9 +11,9 @@ url="https://github.com/David-Nahorniak/acer-profile-rs"
 license=(MIT)
 depends=(gcc-libs systemd stress-ng lm_sensors)
 makedepends=(cargo git)
-optdepends=('power-profiles-daemon: masknutý, nepoužívá se')
+optdepends=('power-profiles-daemon: masknutý přes post_install, nepoužívá se')
 provides=(acer-profile power-profiles-daemon)
-conflicts=(acer-profile power-profiles-daemon)
+conflicts=(acer-profile)
 backup=(etc/acer-profile/profiles.toml)
 install=acer-profile.install
 
