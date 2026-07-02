@@ -144,6 +144,10 @@ jobs:
             --depends "systemd | systemd-sysv" \
             --depends stress-ng \
             --depends lm-sensors \
+            --after-install  distros/post-install.sh \
+            --after-upgrade  distros/post-upgrade.sh \
+            --before-remove  distros/pre-remove.sh \
+            --after-remove   distros/post-remove.sh \
             -p "acer-profile_${VER}_amd64.deb" \
             -C pkg \
             usr/bin etc/acer-profile usr/lib/systemd/system var/lib/acer-profile
@@ -160,6 +164,10 @@ jobs:
             --depends systemd \
             --depends stress-ng \
             --depends lm_sensors \
+            --after-install  distros/post-install.sh \
+            --after-upgrade  distros/post-upgrade.sh \
+            --before-remove  distros/pre-remove.sh \
+            --after-remove   distros/post-remove.sh \
             -p "acer-profile-${VER}-1.x86_64.rpm" \
             -C pkg \
             usr/bin etc/acer-profile usr/lib/systemd/system var/lib/acer-profile

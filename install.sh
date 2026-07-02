@@ -2,6 +2,13 @@
 # Instalace acer-profile (Rust) - jeden binár s DBus nahrazením PPD.
 # Zakáže/maskne power-profiles-daemon (rozbitý EBUSY na Swift SFG14-73) a
 # nainstaluje Rust binár, který vlastní net.hadess.PowerProfiles na system bus.
+#
+# Podporuje dva režimy (autodetekce):
+#   1) Tarball z GitHub Release: vedle skriptu leží předsestavený strom
+#      usr/bin/acer-profile + etc/acer-profile/ + usr/lib/systemd/system/.
+#      Instaluje hotový binár, build toolchain není potřeba.
+#   2) Git checkout: binár chybí -> fallback na `cargo build --release`.
+#
 # Spusť: sudo ./install.sh
 set -euo pipefail
 
@@ -10,7 +17,26 @@ PKGDIR=/etc/acer-profile
 UNITDIR=/etc/systemd/system
 STATEDIR=/var/lib/acer-profile
 BINDIR=/usr/bin
-PY_SITE=$(/usr/bin/python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])" 2>/dev/null || true)
+
+# -----------------------------------------------------------------------
+# Detekce režimu: předsestavený tarball strom vs. git checkout (build).
+# -----------------------------------------------------------------------
+PREBUILT_BIN="$SRC/usr/bin/acer-profile"
+PREBUILT_CFG="$SRC/etc/acer-profile/profiles.toml"
+PREBUILT_UNIT="$SRC/usr/lib/systemd/system/acer-profile.service"
+
+if [ -x "$PREBUILT_BIN" ]; then
+  MODE="tarball"
+  BIN_SRC="$PREBUILT_BIN"
+  CFG_SRC="$PREBUILT_CFG"
+  UNIT_SRC="$PREBUILT_UNIT"
+else
+  MODE="build"
+  BIN_SRC=""
+  CFG_SRC="$SRC/config/profiles.toml"
+  UNIT_SRC="$SRC/systemd/acer-profile.service"
+fi
+echo "Režim instalace: $MODE"
 
 # -----------------------------------------------------------------------
 # Detekce správce balíčků (Arch pacman / Debian apt / Fedora dnf).
@@ -25,7 +51,7 @@ detect_pkg_mgr() {
 PKG_MGR="$(detect_pkg_mgr)"
 
 # Mapa: název závislosti -> balíček pro každý správce.
-#   rust/cargo  : build acer-profile
+#   rust/cargo  : build acer-profile (pouze v režimu build)
 #   stress-ng   : subcommand measure / probe-pl2
 #   lm_sensors  : čtení Package teploty (sensors)
 #   dbus        : system bus pro daemon
@@ -57,48 +83,19 @@ ensure_cmd() {
   fi
 }
 
-echo "[0/10] Kontrola závislostí (rust/cargo + stress-ng + sensors + dbus)"
+# -----------------------------------------------------------------------
+# Runtime závislosti (potřebné v obou režimech).
+# -----------------------------------------------------------------------
+echo "[0] Kontrola runtime závislostí (stress-ng + sensors + dbus)"
 if [ -z "$PKG_MGR" ]; then
   echo "  varování: nepodařilo se detekovat pacman/apt/dnf. Pokud něco chybí,"
-  echo "  nainstaluj ručně: rust cargo stress-ng lm_sensors dbus"
+  echo "  nainstaluj ručně: stress-ng lm_sensors dbus"
 fi
-# cargo + rustc: nutné pro build. Pokud chybí, zkusíme rust balíček správce;
-# fallbackem je rustup do uživatelského profilu (instaluje se do ~/.cargo/bin).
-if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; then
-  echo "  chybí: cargo/rustc"
-  # Arch/Debian/Fedora mají balíček 'rust' (+ 'cargo' na Debianu).
-  if [ "$PKG_MGR" = pacman ]; then
-    pkg_install rust
-  elif [ "$PKG_MGR" = apt ]; then
-    pkg_install cargo rustc
-  elif [ "$PKG_MGR" = dnf ]; then
-    pkg_install rust cargo
-  fi
-fi
-# Stále chybí? Fallback: rustup do uživatelského profilu (bez sudo, pro root).
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "  správce balíčků nenainstaloval cargo -> fallback rustup (do ~/.cargo)"
-  if command -v curl >/dev/null 2>&1; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh
-    sh /tmp/rustup-init.sh -y --default-toolchain stable --profile minimal --no-modify-path
-    # Přidat do PATH pro tento skript.
-    export PATH="$HOME/.cargo/bin:$PATH"
-    echo "  rustup nainstalován (cargo v $HOME/.cargo/bin)"
-    echo "  POZNÁMKA: přidej 'export PATH=\$HOME/.cargo/bin:\$PATH' do /root/.bashrc"
-    echo "            nebo instaluj rust přes správce balíčků pro persistenci napříč rebootem."
-  else
-    echo "  !! curl chybí - nelze použít rustup fallback. Nainstaluj rust/cargo ručně."
-    exit 1
-  fi
-fi
-# Knihovna pkg-config (cargo ji občas vyžaduje při linkování systémových knihoven).
-if ! command -v pkg-config >/dev/null 2>&1; then
-  ensure_cmd pkg-config pkgconf pkg-config pkgconfig
-fi
-# Runtime závislosti subcommandů measure/probe-pl2 + teploty.
+# stress-ng: subcommand measure / probe-pl2.
 ensure_cmd stress-ng stress-ng stress-ng stress-ng
+# lm_sensors: čtení Package teploty (sensors).
 ensure_cmd sensors lm_sensors lm-sensors lm_sensors
-# dbus (system bus) - obvykle už přítomen, ale ověřím.
+# dbus (system bus) - obvykle už přítomen, ale ověřím přes busctl.
 if ! command -v busctl >/dev/null 2>&1; then
   echo "  chybí: busctl (systemd/dbus)"
   case "$PKG_MGR" in
@@ -108,57 +105,84 @@ if ! command -v busctl >/dev/null 2>&1; then
   esac
 fi
 
-# Znovu ověř klíčové nástroje po případné instalaci.
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "  !! cargo stále chybí po instalaci. Oprav ručně a spusť install.sh znovu."
+# -----------------------------------------------------------------------
+# Build závislosti (pouze režim build).
+# -----------------------------------------------------------------------
+if [ "$MODE" = "build" ]; then
+  echo "[0b] Režim build: kontrola cargo/rustc + pkg-config"
+  # cargo + rustc: nutné pro build. Pokud chybí, zkusíme rust balíček správce;
+  # fallbackem je rustup do uživatelského profilu (instaluje se do ~/.cargo/bin).
+  if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; then
+    echo "  chybí: cargo/rustc"
+    if [ "$PKG_MGR" = pacman ]; then
+      pkg_install rust
+    elif [ "$PKG_MGR" = apt ]; then
+      pkg_install cargo rustc
+    elif [ "$PKG_MGR" = dnf ]; then
+      pkg_install rust cargo
+    fi
+  fi
+  # Stále chybí? Fallback: rustup do uživatelského profilu (bez sudo, pro root).
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "  správce balíčků nenainstaloval cargo -> fallback rustup (do ~/.cargo)"
+    if command -v curl >/dev/null 2>&1; then
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh
+      sh /tmp/rustup-init.sh -y --default-toolchain stable --profile minimal --no-modify-path
+      export PATH="$HOME/.cargo/bin:$PATH"
+      echo "  rustup nainstalován (cargo v $HOME/.cargo/bin)"
+      echo "  POZNÁMKA: přidej 'export PATH=\$HOME/.cargo/bin:\$PATH' do /root/.bashrc"
+      echo "            nebo instaluj rust přes správce balíčků pro persistenci napříč rebootem."
+    else
+      echo "  !! curl chybí - nelze použít rustup fallback. Nainstaluj rust/cargo ručně."
+      exit 1
+    fi
+  fi
+  # Knihovna pkg-config (cargo ji občas vyžaduje při linkování systémových knihoven).
+  if ! command -v pkg-config >/dev/null 2>&1; then
+    ensure_cmd pkg-config pkgconf pkg-config pkgconfig
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "  !! cargo stále chybí po instalaci. Oprav ručně a spusť install.sh znovu."
+    exit 1
+  fi
+  echo "  build toolchain OK (cargo $(cargo --version 2>/dev/null | awk '{print $2}'))"
+fi
+
+# -----------------------------------------------------------------------
+# Získání bináre: instalace z tarballu nebo cargo build.
+# -----------------------------------------------------------------------
+if [ "$MODE" = "tarball" ]; then
+  echo "[1] Instaluji předsestavený binár z tarballu"
+  BIN="$BIN_SRC"
+else
+  echo "[1] Build (cargo build --release)"
+  cd "$SRC"
+  cargo build --release
+  BIN="$SRC/target/release/acer-profile"
+fi
+if [ ! -x "$BIN" ]; then
+  echo "  !! binár nenalezen: $BIN"
   exit 1
 fi
-echo "  závislosti OK (cargo $(cargo --version 2>/dev/null | awk '{print $2}'))"
 
-echo "[1/10] Build (cargo build --release)"
-cd "$SRC"
-cargo build --release
-BIN="$SRC/target/release/acer-profile"
-
-echo "[2/10] Migrace: zastavení starého Python daemonu (pokud běží)"
-if systemctl list-unit-files 2>/dev/null | grep -q '^acer-profile\.service'; then
-  systemctl stop acer-profile.service 2>/dev/null || true
-  systemctl disable acer-profile.service 2>/dev/null || true
-  echo "  starý acer-profile.service zastaven/disablován"
-fi
-
-echo "[3/10] Migrace: odstranění staré Python instalace (state + config zachovány)"
-# Staré Python soubory v site-packages
-if [ -n "$PY_SITE" ] && [ -d "$PY_SITE/acer_profile" ]; then
-  rm -rf "$PY_SITE/acer_profile"
-  echo "  odstraněno $PY_SITE/acer_profile"
-fi
-# Staré shell wrappery (nový binár je jeden: /usr/bin/acer-profile)
-for w in acer-profile acer-profiled; do
-  if [ -f "$BINDIR/$w" ] && grep -q 'acer_profile' "$BINDIR/$w" 2>/dev/null; then
-    rm -f "$BINDIR/$w"
-    echo "  odstraněn starý wrapper $BINDIR/$w"
-  fi
-done
-
-echo "[4/10] Instalace bináre do $BINDIR"
+echo "[2] Instalace bináre do $BINDIR"
 install -m 0755 "$BIN" "$BINDIR/acer-profile"
 echo "  /usr/bin/acer-profile"
 
-echo "[5/10] Konfigurace do $PKGDIR (záloha existujícího)"
+echo "[3] Konfigurace do $PKGDIR (záloha existujícího)"
 install -d "$PKGDIR"
 if [ -f "$PKGDIR/profiles.toml" ]; then
   cp -a "$PKGDIR/profiles.toml" "$PKGDIR/profiles.toml.bak.$(date +%s)"
   echo "  existující config zálohován (přeskočeno přepsání - zachovány uživatelské hodnoty)"
 else
-  install -m 0644 "$SRC/config/profiles.toml" "$PKGDIR/profiles.toml"
+  install -m 0644 "$CFG_SRC" "$PKGDIR/profiles.toml"
   echo "  konfig instalován $PKGDIR/profiles.toml"
 fi
 
-echo "[6/10] State dir $STATEDIR (zachován pokud existuje)"
+echo "[4] State dir $STATEDIR (zachován pokud existuje)"
 install -d "$STATEDIR"
 
-echo "[7/10] Mask power-profiles-daemon (zabrání kolizi o DBus jméno)"
+echo "[5] Mask power-profiles-daemon (zabrání kolizi o DBus jméno)"
 # mask (ne jen disable) - balíček zůstane, ale nikdy nenaběhne, ani po reboot.
 if systemctl list-unit-files 2>/dev/null | grep -q 'power-profiles-daemon'; then
   systemctl disable --now power-profiles-daemon 2>/dev/null || true
@@ -168,14 +192,14 @@ else
   echo "  power-profiles-daemon není přítomen (nic k masknutí)"
 fi
 
-echo "[8/10] Systemd unit + aktivace"
-install -m 0644 "$SRC/systemd/acer-profile.service" "$UNITDIR/acer-profile.service"
+echo "[6] Systemd unit + aktivace"
+install -m 0644 "$UNIT_SRC" "$UNITDIR/acer-profile.service"
 systemctl daemon-reload
 systemctl enable --now acer-profile.service
 sleep 2
 systemctl --no-pager --full status acer-profile.service || true
 
-echo "[9/10] Ověření"
+echo "[7] Ověření"
 acer-profile status
 echo
 echo "DBus introspekce (měla by ukázat náš interface):"
