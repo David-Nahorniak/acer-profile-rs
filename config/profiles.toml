@@ -15,16 +15,16 @@ gpu_max_mhz = 800
 gpu_boost_mhz = 800
 
 [normal]
-pl1_uw = 35000000
-pl2_uw = 45000000
+pl1_uw = 30000000
+pl2_uw = 40000000
 epp = "balance_power"
 governor = "powersave"
 gpu_max_mhz = 1600
 gpu_boost_mhz = 1600
 
 [performance]
-pl1_uw = 45000000
-pl2_uw = 64000000
+pl1_uw = 35000000
+pl2_uw = 45000000
 epp = "performance"
 governor = "performance"
 gpu_max_mhz = 2350
